@@ -35,7 +35,14 @@ def combine_prompt(instruction, resource, table_str=None):
 
 
 def save_to_file(data: str, file_path: str):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    # Get directory path
+    directory = os.path.dirname(file_path)
+    
+    # Create directory if it's not empty and doesn't exist
+    if directory:  # This checks if directory is not an empty string
+        os.makedirs(directory, exist_ok=True)
+    
+    # Write the file
     with open(file_path, "w") as f:
         f.write(data)
 
@@ -146,13 +153,33 @@ def analyze_balance_sheet(
     return prompt, f"Data and instructions saved to {save_path}" #This is to generate the output file 
 
 if __name__ == "__main__":
-    # Get user input with guidance
-    ticker = input("Enter company ticker symbol (e.g., AAPL, TSLA): ").strip().upper()
-    fyear = input("Enter fiscal year for 10-K report (e.g., 2023): ").strip()
-    #set the default path to have ticker symbol and fyear
-    default_path = f"{ticker}_{fyear}_balance_sheet_analysis.txt"
-    save_path = input(f"Enter save path [default: {default_path}]: ").strip() or default_path
+    # Get and validate ticker input
+    while True:
+        ticker = input("Enter company ticker symbol (e.g., AAPL, TSLA): ").strip().upper()
+        if ticker and ticker.isalpha():
+            break
+        print("Invalid ticker! Please enter a valid stock symbol.")
 
-    # Execute analysis with user parameters
+    # Get and validate fiscal year input
+    while True:
+        fyear = input("Enter fiscal year for 10-K report (e.g., 2024): ").strip()
+        if fyear and fyear.isdigit() and len(fyear) == 4:
+            break
+        print("Invalid year! Please enter a 4-digit year (e.g., 2024).")
+
+    # Get and validate save path input
+    default_path = f"{ticker}_{fyear}_balance_sheet_analysis.txt"
+    while True:
+        save_path = input(f"Enter save path [default: {default_path}]: ").strip() or default_path
+        try:
+            # Test if we can open the file for writing
+            with open(save_path, 'a') as f:
+                pass
+            os.remove(save_path)  # Remove the test file
+            break
+        except OSError:
+            print(f"Invalid path! Please enter a valid file path.")
+
+    # Execute analysis with validated parameters
     result = analyze_balance_sheet(ticker, fyear, save_path)
     print(f"\nAnalysis completed: {result[1]}")
