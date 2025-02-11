@@ -30,6 +30,6 @@ And with the help of Large Language Model (LLM) and agent, further translate all
 - Yahoo Finance (yfinance) doesn't need an API key, however you will get rate limited if requesting too frequently
 
 ## Maintained by:
-[DataMy](www.datamy.co)
-
+[DataMy](https://www.datamy.co)
+ 
 [Support Email](mailto:raymond@datamy.co)
