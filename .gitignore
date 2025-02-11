@@ -2,6 +2,7 @@
 .cache/
 
 # Environment variables
+venv/
 .env
 .env.*
 !.env.example 
