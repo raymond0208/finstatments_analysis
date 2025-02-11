@@ -7,6 +7,8 @@ from textwrap import dedent
 from get_10k_base import SecReportFetcher
 from sec_api import ExtractorApi
 import yfinance as yf
+import asyncio
+from autogen import ConversableAgent
 
 # Load environment variables from .env file
 load_dotenv()
@@ -109,17 +111,57 @@ def get_10k_section(
 
     return section_text
 
+# Add this new function for LLM analysis
+async def analyze_with_llm(prompt: str, api_key: str) -> str:
+    """
+    Analyze the balance sheet data using LLM through AutoGen.
+    """
+    agent = ConversableAgent(
+        name="BalanceSheetAnalyzer",
+        system_message="""You are an expert financial analyst. Your task is to analyze the provided financial statements data and 10-K report information directly.
+        DO NOT try to fetch new data or call any functions. Instead, analyze the data that is provided to you in the prompt.
+        
+        Provide a detailed analysis that includes:
+        1. Financial Position Analysis
+        2. Liquidity Assessment
+        3. Solvency Analysis
+        4. Year-over-Year Trends
+        5. Strategic Insights
+        
+        Use specific numbers and ratios from the provided data in your analysis.""",
+        human_input_mode="NEVER",
+        llm_config={
+            "config_list": [
+                {
+                    "model": "deepseek-chat",
+                    "api_key": api_key,
+                    "base_url": "https://api.deepseek.com/v1",
+                }
+            ],
+            "temperature": 1.3,
+            "timeout": 120,
+        },
+        function_map=None
+    )
 
-def analyze_balance_sheet(
+    try:
+        response = await agent.a_generate_reply(
+            messages=[{"role": "user", "content": prompt}],
+            sender=agent
+        )
+        return response.get('content', str(response)) if isinstance(response, dict) else str(response)
+    except Exception as e:
+        return f"Error during analysis: {str(e)}"
+
+# Modify analyze_balance_sheet to be async and include LLM analysis
+async def analyze_balance_sheet(
     ticker_symbol: Annotated[str, "ticker symbol"],
     fyear: Annotated[str, "fiscal year of the 10-K report"],
-    save_path: Annotated[str, "txt file path, to which the returned instruction & resources are written."]
+    save_path: Annotated[str, "txt file path, to which the returned instruction & resources are written."],
+    llm_api_key: str = None
 ) -> tuple[str, str]:
     """
-    Retrieve the balance sheet for the given ticker symbol with the related section of its 10-K report.
-    Then return with an instruction on how to analyze the balance sheet.
-    Returns:
-        tuple: (prompt, save_status)
+    Retrieve and analyze the balance sheet for the given ticker symbol.
     """
     # Get balance sheet data
     print("Fetching balance sheet data...")
@@ -142,16 +184,32 @@ def analyze_balance_sheet(
 
     # Retrieve the related section from the 10-K report
     print("Fetching 10-K report section...")
-    section_text = get_10k_section(ticker_symbol, fyear, 7, save_path=None)  # Don't save section separately
+    section_text = get_10k_section(ticker_symbol, fyear, 7, save_path=None)
 
-    # Combine all components into the prompt, the prompt has balance sheet data(df_string), 10-K report section(section_text), and LLM instruction(instruction)
-    prompt = combine_prompt(instruction, section_text, df_string) #根据生成的balance_sheet_analysis.txt显示，最左边的参数结果显示在最下面，最右边的参数结果显示在最上面。代表显示顺序是从右到左。
+    # Combine all components into the prompt
+    prompt = combine_prompt(instruction, section_text, df_string)
 
-    # Save the complete prompt text to a file as the raw balance sheet info file
+    # Save the initial data and instructions
     save_to_file(prompt, save_path)
     
-    return prompt, f"Data and instructions saved to {save_path}" #This is to generate the output file 
+    # If LLM API key is provided, perform LLM analysis
+    if llm_api_key:
+        print("Performing LLM analysis...")
+        try:
+            analysis = await analyze_with_llm(prompt, llm_api_key)
+            
+            # Append the analysis to the file
+            with open(save_path, 'a') as f:
+                f.write("\n\n--- LLM Analysis ---\n")
+                f.write(analysis)
+            
+            return prompt, f"Data, instructions, and LLM analysis saved to {save_path}"
+        except Exception as e:
+            return prompt, f"Data and instructions saved, but LLM analysis failed: {str(e)}"
+    
+    return prompt, f"Data and instructions saved to {save_path}"
 
+# Update the main block to properly handle async execution
 if __name__ == "__main__":
     # Get and validate ticker input
     while True:
@@ -172,14 +230,21 @@ if __name__ == "__main__":
     while True:
         save_path = input(f"Enter save path [default: {default_path}]: ").strip() or default_path
         try:
-            # Test if we can open the file for writing
             with open(save_path, 'a') as f:
                 pass
-            os.remove(save_path)  # Remove the test file
+            os.remove(save_path)
             break
         except OSError:
             print(f"Invalid path! Please enter a valid file path.")
 
-    # Execute analysis with validated parameters
-    result = analyze_balance_sheet(ticker, fyear, save_path)
-    print(f"\nAnalysis completed: {result[1]}")
+    # Get LLM API key
+    llm_api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not llm_api_key:
+        llm_api_key = input("Enter DeepSeek API key (press Enter to skip LLM analysis): ").strip() or None
+
+    # Execute analysis with validated parametebrs
+    try:
+        result = asyncio.run(analyze_balance_sheet(ticker, fyear, save_path, llm_api_key))
+        print(f"\nAnalysis completed: {result[1]}")
+    except Exception as e:
+        print(f"\nError during analysis: {str(e)}")
