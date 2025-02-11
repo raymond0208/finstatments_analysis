@@ -1,4 +1,4 @@
-# Stock Financial Statement Analysis
+# Stock Financial Statement Analysis Agent
 
 Fundamental analysis regarding company's financial statements can be a really challenging and tedious task for common investors. And even with the calculated ratios, it is still hard to interpret it into an understandable format.
 
@@ -10,6 +10,8 @@ And with the help of Large Language Model (LLM) and agent, further translate all
 ## Features:
 - Retrieve official company filings, latest and historical financial data from authorities and financial market
 - Analyze financial data leveraging LLM and agent
+- Support DeepSeek API for LLM analysis
+- Use Autogen for agents operation
 
 ## Architecture flow map:
 ![flow_map](./FinChart.png)
@@ -26,3 +28,8 @@ And with the help of Large Language Model (LLM) and agent, further translate all
 - You need to apply for the API keys from Financial Modeling Prep (FMP_API_KEY) and Securities and Exchange Commission (SEC_API_KEY)
 - Large Language Model API key from venders(OpenAI, DeepSeek, etc. )
 - Yahoo Finance (yfinance) doesn't need an API key, however you will get rate limited if requesting too frequently
+
+## Maintained by:
+[DataMy](www.datamy.co)
+
+[Support Email](mailto:raymond@datamy.co)
