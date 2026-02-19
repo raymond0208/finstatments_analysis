@@ -2,9 +2,8 @@
 Validation tests for repository review.
 Tests code logic that can be exercised without external API keys.
 
-Designed to run with MINIMAL dependencies — only requires:
-  pip install requests python-dotenv sec-api yfinance pandas
-Does NOT require: openai, autogen/pyautogen
+Designed to run with ZERO project dependencies — uses only the Python
+standard library. All external packages are mocked at module level.
 
 Run with:  python3 -m unittest test_review.py -v
 """
@@ -15,57 +14,61 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 # =============================================================================
-# MOCK HEAVY DEPENDENCIES AT MODULE LEVEL (before any test imports them)
+# MOCK ALL EXTERNAL DEPENDENCIES AT MODULE LEVEL
 #
-# autogen imports openai internally. If openai is missing, autogen's own import
-# fails. We must inject mocks for openai AND all its submodules into sys.modules
-# BEFORE anything tries to import autogen. This block runs once when the test
-# file is loaded — long before setUp().
+# These mocks MUST be installed before any test tries to import
+# analyze_BS_w_param.py or get_10k_base.py. They run once when this file
+# is loaded — long before setUp().
+#
+# Why mock everything? Some packages (yfinance, autogen) make network calls
+# or have heavy init at import time, causing multi-minute hangs. Our tests
+# only exercise pure logic (prompt building, file I/O, URL parsing,
+# validation), so we don't need any real external packages.
 # =============================================================================
-_openai_available = True
-try:
-    import openai
-except (ImportError, ModuleNotFoundError):
-    _openai_available = False
+_mock = MagicMock()
 
-if not _openai_available:
-    _mock = MagicMock()
-    # openai and every submodule autogen might touch
-    for _mod in [
-        'openai', 'openai.types', 'openai.types.chat',
-        'openai.types.chat.chat_completion',
-        'openai.types.completion_usage',
-        'openai._client', 'openai._base_client',
-        'openai.resources', 'openai.resources.chat',
-        'openai.resources.chat.completions',
-        'openai._types', 'openai._models',
-        'openai._streaming', 'openai._response',
-        'openai.lib', 'openai.lib._parsing',
-    ]:
-        sys.modules.setdefault(_mod, _mock)
+# Make dotenv.load_dotenv() a no-op
+_dotenv_mock = MagicMock()
+_dotenv_mock.load_dotenv = MagicMock(return_value=None)
 
-    # autogen also can't initialize without real openai, so mock it too
-    _autogen_mock = MagicMock()
-    for _mod in [
-        'autogen', 'autogen.agentchat', 'autogen.oai',
-        'autogen.agentchat.agent', 'autogen.agentchat.conversable_agent',
-        'autogen.agentchat.contrib', 'autogen.agentchat.contrib.swarm_agent',
-        'autogen.runtime_logging', 'autogen.code_utils',
-        'autogen.cache', 'autogen.io',
-    ]:
-        sys.modules.setdefault(_mod, _autogen_mock)
+for _mod in [
+    # dotenv (imported at module level by analyze_BS_w_param)
+    'dotenv',
+    # openai + submodules (required by autogen internally)
+    'openai', 'openai.types', 'openai.types.chat',
+    'openai.types.chat.chat_completion', 'openai.types.completion_usage',
+    'openai._client', 'openai._base_client', 'openai.resources',
+    'openai.resources.chat', 'openai.resources.chat.completions',
+    'openai._types', 'openai._models', 'openai._streaming',
+    'openai._response', 'openai.lib', 'openai.lib._parsing',
+    # autogen + submodules
+    'autogen', 'autogen.agentchat', 'autogen.oai',
+    'autogen.agentchat.agent', 'autogen.agentchat.conversable_agent',
+    'autogen.agentchat.contrib', 'autogen.agentchat.contrib.swarm_agent',
+    'autogen.runtime_logging', 'autogen.code_utils',
+    'autogen.cache', 'autogen.io',
+    # yfinance (makes network calls at import time, causes hangs)
+    'yfinance',
+    # sec_api
+    'sec_api',
+    # pandas (heavy init, not needed for logic tests)
+    'pandas',
+]:
+    if _mod == 'dotenv':
+        sys.modules[_mod] = _dotenv_mock
+    else:
+        sys.modules[_mod] = _mock
 
 
 def _import_from_analyze(name):
     """
     Safely import a name from analyze_BS_w_param, handling module-level
     side effects (env vars, ExtractorApi init).
-    Heavy deps (openai/autogen) are already mocked above at module level.
+    All heavy deps are already mocked above at module level.
     """
     # Clear cached module so it re-imports with our env patches active
-    for mod in list(sys.modules):
-        if mod == 'analyze_BS_w_param':
-            del sys.modules[mod]
+    if 'analyze_BS_w_param' in sys.modules:
+        del sys.modules['analyze_BS_w_param']
 
     from analyze_BS_w_param import combine_prompt, save_to_file, get_10k_section
     return {'combine_prompt': combine_prompt,
@@ -73,7 +76,7 @@ def _import_from_analyze(name):
             'get_10k_section': get_10k_section}[name]
 
 
-# --- Tests for get_10k_base.py (no heavy deps needed) ---
+# --- Tests for get_10k_base.py ---
 
 class TestSecReportFetcher(unittest.TestCase):
     """Tests for SecReportFetcher class."""
@@ -159,13 +162,10 @@ class TestCombinePrompt(unittest.TestCase):
             "FMP_API_KEY": "test_fmp_key",
         })
         self.env_patcher.start()
-        self.extractor_patcher = patch('sec_api.ExtractorApi')
-        self.extractor_patcher.start()
         self.combine_prompt = _import_from_analyze('combine_prompt')
 
     def tearDown(self):
         self.env_patcher.stop()
-        self.extractor_patcher.stop()
 
     def test_with_table(self):
         result = self.combine_prompt("analyze this", "10k section text", "Balance: $100")
@@ -193,13 +193,10 @@ class TestSaveToFile(unittest.TestCase):
             "FMP_API_KEY": "test_fmp_key",
         })
         self.env_patcher.start()
-        self.extractor_patcher = patch('sec_api.ExtractorApi')
-        self.extractor_patcher.start()
         self.save_to_file = _import_from_analyze('save_to_file')
 
     def tearDown(self):
         self.env_patcher.stop()
-        self.extractor_patcher.stop()
 
     def test_save_creates_file(self):
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
@@ -252,13 +249,10 @@ class TestSectionValidation(unittest.TestCase):
             "FMP_API_KEY": "test_fmp_key",
         })
         self.env_patcher.start()
-        self.extractor_patcher = patch('sec_api.ExtractorApi')
-        self.extractor_patcher.start()
         self.get_10k_section = _import_from_analyze('get_10k_section')
 
     def tearDown(self):
         self.env_patcher.stop()
-        self.extractor_patcher.stop()
 
     def test_invalid_section_raises(self):
         with self.assertRaises(ValueError):
@@ -294,13 +288,10 @@ class TestSilentErrorPropagation(unittest.TestCase):
             "FMP_API_KEY": "test_fmp_key",
         })
         self.env_patcher.start()
-        self.extractor_patcher = patch('sec_api.ExtractorApi')
-        self.extractor_patcher.start()
         self.get_10k_section = _import_from_analyze('get_10k_section')
 
     def tearDown(self):
         self.env_patcher.stop()
-        self.extractor_patcher.stop()
 
     @patch('get_10k_base.requests.get')
     def test_http_error_flows_as_section_text(self, mock_get):
