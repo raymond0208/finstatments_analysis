@@ -5,6 +5,8 @@ Tests code logic that can be exercised without external API keys.
 Designed to run with MINIMAL dependencies — only requires:
   pip install requests python-dotenv sec-api yfinance pandas
 Does NOT require: openai, autogen/pyautogen
+
+Run with:  python3 -m unittest test_review.py -v
 """
 import os
 import sys
@@ -12,36 +14,58 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
+# =============================================================================
+# MOCK HEAVY DEPENDENCIES AT MODULE LEVEL (before any test imports them)
+#
+# autogen imports openai internally. If openai is missing, autogen's own import
+# fails. We must inject mocks for openai AND all its submodules into sys.modules
+# BEFORE anything tries to import autogen. This block runs once when the test
+# file is loaded — long before setUp().
+# =============================================================================
+_openai_available = True
+try:
+    import openai
+except (ImportError, ModuleNotFoundError):
+    _openai_available = False
 
-def _ensure_autogen_mock():
-    """
-    Mock out openai and autogen at the sys.modules level so that
-    analyze_BS_w_param.py can be imported without these heavy dependencies.
-    Only installs mocks if the real packages aren't available.
-    """
-    for mod_name in ['openai', 'autogen', 'autogen.agentchat', 'autogen.oai']:
-        if mod_name not in sys.modules:
-            try:
-                __import__(mod_name)
-            except (ImportError, ModuleNotFoundError):
-                mock_mod = MagicMock()
-                sys.modules[mod_name] = mock_mod
+if not _openai_available:
+    _mock = MagicMock()
+    # openai and every submodule autogen might touch
+    for _mod in [
+        'openai', 'openai.types', 'openai.types.chat',
+        'openai.types.chat.chat_completion',
+        'openai.types.completion_usage',
+        'openai._client', 'openai._base_client',
+        'openai.resources', 'openai.resources.chat',
+        'openai.resources.chat.completions',
+        'openai._types', 'openai._models',
+        'openai._streaming', 'openai._response',
+        'openai.lib', 'openai.lib._parsing',
+    ]:
+        sys.modules.setdefault(_mod, _mock)
 
-    # Ensure autogen.ConversableAgent exists as a mock class
-    if isinstance(sys.modules.get('autogen'), MagicMock):
-        sys.modules['autogen'].ConversableAgent = MagicMock
+    # autogen also can't initialize without real openai, so mock it too
+    _autogen_mock = MagicMock()
+    for _mod in [
+        'autogen', 'autogen.agentchat', 'autogen.oai',
+        'autogen.agentchat.agent', 'autogen.agentchat.conversable_agent',
+        'autogen.agentchat.contrib', 'autogen.agentchat.contrib.swarm_agent',
+        'autogen.runtime_logging', 'autogen.code_utils',
+        'autogen.cache', 'autogen.io',
+    ]:
+        sys.modules.setdefault(_mod, _autogen_mock)
 
 
 def _import_from_analyze(name):
     """
-    Safely import a name from analyze_BS_w_param, handling all module-level
-    side effects (env vars, API client init, heavy dependencies).
+    Safely import a name from analyze_BS_w_param, handling module-level
+    side effects (env vars, ExtractorApi init).
+    Heavy deps (openai/autogen) are already mocked above at module level.
     """
-    _ensure_autogen_mock()
-
-    # Clear cached module so it re-imports with our mocks/patches active
-    if 'analyze_BS_w_param' in sys.modules:
-        del sys.modules['analyze_BS_w_param']
+    # Clear cached module so it re-imports with our env patches active
+    for mod in list(sys.modules):
+        if mod == 'analyze_BS_w_param':
+            del sys.modules[mod]
 
     from analyze_BS_w_param import combine_prompt, save_to_file, get_10k_section
     return {'combine_prompt': combine_prompt,
