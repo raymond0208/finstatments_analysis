@@ -1,6 +1,10 @@
 """
 Validation tests for repository review.
 Tests code logic that can be exercised without external API keys.
+
+Designed to run with MINIMAL dependencies — only requires:
+  pip install requests python-dotenv sec-api yfinance pandas
+Does NOT require: openai, autogen/pyautogen
 """
 import os
 import sys
@@ -8,7 +12,44 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-# --- Tests for get_10k_base.py ---
+
+def _ensure_autogen_mock():
+    """
+    Mock out openai and autogen at the sys.modules level so that
+    analyze_BS_w_param.py can be imported without these heavy dependencies.
+    Only installs mocks if the real packages aren't available.
+    """
+    for mod_name in ['openai', 'autogen', 'autogen.agentchat', 'autogen.oai']:
+        if mod_name not in sys.modules:
+            try:
+                __import__(mod_name)
+            except (ImportError, ModuleNotFoundError):
+                mock_mod = MagicMock()
+                sys.modules[mod_name] = mock_mod
+
+    # Ensure autogen.ConversableAgent exists as a mock class
+    if isinstance(sys.modules.get('autogen'), MagicMock):
+        sys.modules['autogen'].ConversableAgent = MagicMock
+
+
+def _import_from_analyze(name):
+    """
+    Safely import a name from analyze_BS_w_param, handling all module-level
+    side effects (env vars, API client init, heavy dependencies).
+    """
+    _ensure_autogen_mock()
+
+    # Clear cached module so it re-imports with our mocks/patches active
+    if 'analyze_BS_w_param' in sys.modules:
+        del sys.modules['analyze_BS_w_param']
+
+    from analyze_BS_w_param import combine_prompt, save_to_file, get_10k_section
+    return {'combine_prompt': combine_prompt,
+            'save_to_file': save_to_file,
+            'get_10k_section': get_10k_section}[name]
+
+
+# --- Tests for get_10k_base.py (no heavy deps needed) ---
 
 class TestSecReportFetcher(unittest.TestCase):
     """Tests for SecReportFetcher class."""
@@ -23,7 +64,6 @@ class TestSecReportFetcher(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_init_without_api_key_raises(self):
         """SecReportFetcher raises ValueError when FMP_API_KEY is missing."""
-        # Need to reload module to re-execute __init__ check
         if 'get_10k_base' in sys.modules:
             del sys.modules['get_10k_base']
         from get_10k_base import SecReportFetcher
@@ -39,7 +79,6 @@ class TestSecReportFetcher(unittest.TestCase):
         fetcher = SecReportFetcher()
         result = fetcher.get_sec_report("AAPL", "2024")
         self.assertIn("Failed to retrieve data", result)
-        # NOTE: This is the design issue — returns string instead of raising
 
     @patch.dict(os.environ, {"FMP_API_KEY": "test_key"})
     @patch('get_10k_base.requests.get')
@@ -68,26 +107,37 @@ class TestSecReportFetcher(unittest.TestCase):
         self.assertIn("Link:", result)
         self.assertIn("http://example.com/10k", result)
 
+    @patch.dict(os.environ, {"FMP_API_KEY": "test_key"})
+    @patch('get_10k_base.requests.get')
+    def test_get_sec_report_latest(self, mock_get):
+        """get_sec_report with 'latest' returns the first filing."""
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [
+                {"fillingDate": "2024-03-01", "finalLink": "http://example.com/latest"},
+                {"fillingDate": "2023-03-01", "finalLink": "http://example.com/older"},
+            ]
+        )
+        from get_10k_base import SecReportFetcher
+        fetcher = SecReportFetcher()
+        result = fetcher.get_sec_report("AAPL", "latest")
+        self.assertIn("http://example.com/latest", result)
 
-# --- Tests for analyze_BS_w_param.py (function-level, no module-level import) ---
+
+# --- Tests for analyze_BS_w_param.py functions ---
 
 class TestCombinePrompt(unittest.TestCase):
     """Tests for combine_prompt function."""
 
     def setUp(self):
-        """Import combine_prompt by patching env vars to avoid module-level crash."""
         self.env_patcher = patch.dict(os.environ, {
             "SEC_API_KEY": "test_sec_key",
             "FMP_API_KEY": "test_fmp_key",
         })
         self.env_patcher.start()
-        # Must patch ExtractorApi before importing
         self.extractor_patcher = patch('sec_api.ExtractorApi')
         self.extractor_patcher.start()
-        if 'analyze_BS_w_param' in sys.modules:
-            del sys.modules['analyze_BS_w_param']
-        from analyze_BS_w_param import combine_prompt
-        self.combine_prompt = combine_prompt
+        self.combine_prompt = _import_from_analyze('combine_prompt')
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -121,10 +171,7 @@ class TestSaveToFile(unittest.TestCase):
         self.env_patcher.start()
         self.extractor_patcher = patch('sec_api.ExtractorApi')
         self.extractor_patcher.start()
-        if 'analyze_BS_w_param' in sys.modules:
-            del sys.modules['analyze_BS_w_param']
-        from analyze_BS_w_param import save_to_file
-        self.save_to_file = save_to_file
+        self.save_to_file = _import_from_analyze('save_to_file')
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -153,11 +200,8 @@ class TestLstripBug(unittest.TestCase):
 
     def test_lstrip_strips_characters_not_substring(self):
         """This proves the lstrip bug: it strips individual chars, not the prefix."""
-        # Simulating what the code does
         report_address = "Link: https://www.sec.gov/Archives/edgar/data/123/10k.htm"
         result = report_address.lstrip("Link: ")
-        # lstrip("Link: ") strips any char in {'L','i','n','k',':',' '} from the left
-        # "https" — 'h' is not in the set, so stripping stops at 'h'
         # In THIS case it happens to work because 'h' isn't in the strip set.
         # But consider a URL starting with a character in the set:
         bad_address = "Link: insurance-data.sec.gov/report"
@@ -186,10 +230,7 @@ class TestSectionValidation(unittest.TestCase):
         self.env_patcher.start()
         self.extractor_patcher = patch('sec_api.ExtractorApi')
         self.extractor_patcher.start()
-        if 'analyze_BS_w_param' in sys.modules:
-            del sys.modules['analyze_BS_w_param']
-        from analyze_BS_w_param import get_10k_section
-        self.get_10k_section = get_10k_section
+        self.get_10k_section = _import_from_analyze('get_10k_section')
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -204,7 +245,6 @@ class TestSectionValidation(unittest.TestCase):
         valid_sections = ["1", "1A", "1B", "2", "7", "7A", "8", "9A", "9B", "10", "15"]
         for section in valid_sections:
             try:
-                # Will fail at API call stage, but should NOT fail at validation
                 self.get_10k_section("AAPL", "2024", section)
             except ValueError:
                 self.fail(f"Section '{section}' should be valid but raised ValueError")
@@ -232,10 +272,7 @@ class TestSilentErrorPropagation(unittest.TestCase):
         self.env_patcher.start()
         self.extractor_patcher = patch('sec_api.ExtractorApi')
         self.extractor_patcher.start()
-        if 'analyze_BS_w_param' in sys.modules:
-            del sys.modules['analyze_BS_w_param']
-        from analyze_BS_w_param import get_10k_section
-        self.get_10k_section = get_10k_section
+        self.get_10k_section = _import_from_analyze('get_10k_section')
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -243,9 +280,8 @@ class TestSilentErrorPropagation(unittest.TestCase):
 
     @patch('get_10k_base.requests.get')
     def test_http_error_flows_as_section_text(self, mock_get):
-        """When FMP API returns 404, the error string becomes 'section text'."""
+        """When FMP API returns 500, the error string becomes 'section text'."""
         mock_get.return_value = MagicMock(status_code=500)
-        # This returns an error message AS IF it were valid section text
         result = self.get_10k_section("AAPL", "2024", "7")
         self.assertIn("Failed to retrieve data", result)
         # This is the bug — caller has no way to know this is an error
